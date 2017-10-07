@@ -1,0 +1,231 @@
+#!/usr/bin/gdb --python
+# Copyright 2017 Thomas Sondergaard <tsondergaard@vitalimages.com>
+#
+# Redistribution and use in source and binary forms, with or
+# without modification, are permitted provided that the following
+# conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above
+# copyright notice, this list of conditions and the following
+# disclaimer in the documentation and/or other materials provided
+# with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+# contributors may be used to endorse or promote products derived
+# from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+# CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+# INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+# USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+# AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+import argparse
+import datetime
+import gdb
+import uuid
+import json
+import os
+import platform
+import re
+import requests
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+from gdb.FrameIterator import FrameIterator
+from urllib.parse import urlparse
+
+sdk_name = 'raven-coredump'
+sdk_version = '0.1.0'
+
+# Variables can be shadowed
+def insert_var(dict, var_name, var_value):
+    name = var_name
+    i = 0
+    while name in dict:
+        name = "%s (shadowed%s)" % (var_name, '*' * i)
+        i = i + 1
+    dict[name] = var_value
+
+# returns local variables and function arguments
+def frame_vars_json(frame):
+    try:
+        block = frame.block()
+    except:
+        return None
+    vars = {}
+    # Inspired by https://stackoverflow.com/questions/30013252
+    while block:
+        for symbol in block:
+            if (symbol.is_variable or symbol.is_argument):
+                insert_var(vars, symbol.name, str(symbol.value(frame)))
+        # Don't search upwards past the function scope
+        if block.function:
+            break
+        else:
+            block = block.superblock
+    return vars
+
+def frame_json(frame):
+    sal = frame.find_sal()
+    js = {
+        'filename': sal.symtab.fullname() if (sal and sal.symtab) else '<unknown>',
+        'function': str(frame.function()) if frame.function() else '<unknown>',
+        'module': gdb.solib_name(frame.pc()),
+        'instruction_addr': ('0x%x' % frame.pc())
+    }
+    if (sal and sal.line > 0):
+        js['lineno'] = sal.line
+    vars = frame_vars_json(frame)
+    if (vars):
+        js['vars'] = vars
+    return js
+
+def backtrace_json(top_frame):
+    frames = list(map(frame_json, FrameIterator(top_frame)))
+    # Sentry format oddly wants oldest frame first.
+    frames.reverse()
+    return { 'frames': frames }
+
+def thread_json(thread):
+    thread.switch()
+    js = {
+        'id': thread.ptid[1],
+        'name': thread.name,
+        'crashed': thread == crashing_thread,
+        'stacktrace': backtrace_json(gdb.newest_frame())
+    }
+    return js
+
+def threads_json(threads):
+    threadsjs = list(map(thread_json, threads))
+    return { 'values': threadsjs }
+
+def install_program():
+    dest_path = '/opt/raven-crashdump/bin/'
+    dest_file = os.path.join(dest_path, 'raven-coredump')
+    print('Installing %s' % dest_file)
+    if not os.path.isdir(dest_path):
+        os.makedirs(dest_path)
+    shutil.copy(os.path.realpath(__file__), dest_file)
+    os.chmod(dest_file, 0o755)
+    conf_file = '/etc/raven-coredump.conf'
+    if os.path.exists(conf_file):
+        print('%s exists - leaving it unchanged' % conf_file)
+    else:
+        print('Installing %s' % conf_file)
+        with open(conf_file, 'w') as outfile:
+            outfile.write(json.dumps({
+                'dsn': 'https://sentry_key:sentry_secret@sentry.io/project-number',
+                'set-opaque-type-resolution-off': true
+            }, indent=4))
+            outfile.write('\n')
+    core_pattern_setting = 'kernel.core_pattern=|%s -e=%%e -E=%%E -p=%%p -P=%%P' % dest_file
+    sysctl_conf_file = '/etc/sysctl.d/80-raven-coredump.conf'
+    print('Installing %s' % sysctl_conf_file)
+    with open(sysctl_conf_file, 'w') as outfile:
+        outfile.write(core_pattern_setting)
+        outfile.write('\n')
+    sysctl_cmd = 'sysctl "%s"' % core_pattern_setting
+    print('Running %s' % sysctl_cmd)
+    subprocess.call(sysctl_cmd, shell=True)
+
+class RavenClient:
+    def __init__(self, dsn):
+        self.dsn = dsn
+        url = urlparse(self.dsn)
+        self.sentry_key = url.username
+        self.sentry_secret = url.password
+        self.project = re.sub(r'^/', '', url.path)
+        self.scheme = url.scheme
+        self.hostname = url.hostname
+        self.port = url.port
+
+    def send_event(self, event, timestamp):
+        url = self.__api_url('store/')
+        headers = {
+            'User-Agent': ('%s/%s' % (sdk_name, sdk_version)),
+            'X-Sentry-Auth': ('Sentry sentry_version=7, sentry_timestamp=%s, sentry_key=%s, sentry_secret=%s, sentry_client=%s/%s' % (timestamp.strftime('%s'), self.sentry_key, self.sentry_secret, sdk_name, sdk_version))
+        }
+        r = requests.post(url, headers=headers, json=event)
+        r.raise_for_status()
+
+    def __api_url(self, op):
+        port_part = self.port if (self.port) else ''
+        return '%s://%s%s/api/%s/%s' % (self.scheme, self.hostname, port_part, self.project, op)
+
+def parse_commandline_args():
+    parser = argparse.ArgumentParser(description='raven-coredump - sentry.io coredump agent')
+    parser.add_argument('-c', metavar='limit', dest='core_file_size_soft_limit', help='core file size soft resource limit of crashing process')
+    parser.add_argument('-e', metavar='filename', dest='executable_filename', help='executable filename (without path prefix)')
+    parser.add_argument('-E', metavar='filepath', dest='executable_filepath', help="pathname of executable, with slashes ('/') replaced by exclamation marks ('!')")
+    parser.add_argument('-I', metavar='tid', dest='tid', help='TID of thread that triggered core dump, as seen in the initial PID namespace')
+    parser.add_argument('-p', metavar='pid', dest='pid_own_ns', help='PID of dumped process, as seen in the PID namespace in which the process resides')
+    parser.add_argument('-P', metavar='pid', dest='pid', help='PID of dumped process, as seen in the initial PID namespace')
+    parser.add_argument('--install', action='store_true', help='Install this program in /opt/raven-cpp/bin and configures is as coredump handler')
+    return parser.parse_args(sys.argv)
+
+args = parse_commandline_args()
+
+if (args.install):
+    install_program()
+    exit(0)
+
+with open('/etc/raven-coredump.conf', 'r') as config_file:
+    config = json.load(config_file)
+
+print('dsn: %s' % config['dsn'])
+
+f = tempfile.NamedTemporaryFile(delete=True)
+shutil.copyfileobj(sys.stdin.buffer, f)
+f.flush()
+args.core_filename = f.name
+args.executable_filepath = args.executable_filepath.replace('!', '/')
+
+if config.get('set-opaque-type-resolution-off', False):
+    # Workaround gdb performance bug https://bugzilla.redhat.com/show_bug.cgi?id=1401091
+    gdb.execute('set opaque-type-resolution off', False, True)
+
+gdb.execute('file %s' % args.executable_filepath, False, True)
+
+gdb.execute('target core %s' % args.core_filename, False, True)
+
+# The initial thread when analyzing a crash is the crashing thread
+crashing_thread = gdb.selected_thread()
+
+timestamp = datetime.datetime.utcnow()
+sentry_event = {
+    'event_id': uuid.uuid4().hex,
+    'timestamp': timestamp.isoformat(),
+    'message': ('Crash in %s' % args.executable_filepath),
+    'platform': 'c',
+    'sdk': { 'name': sdk_name, 'version': sdk_version },
+    'level': 'fatal',
+    'server_name': socket.getfqdn(),
+    'contexts': {
+        'os': {
+            'name': platform.system(),
+            'version': '-'.join(platform.linux_distribution()[0:2]),
+            'kernel_version': platform.release()
+        }
+    },
+    'threads': threads_json(gdb.selected_inferior().threads())
+}
+
+print('json: %s' % json.dumps(sentry_event, indent=4))
+
+raven_client = RavenClient(config['dsn'])
+raven_client.send_event(sentry_event, timestamp)
