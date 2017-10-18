@@ -52,12 +52,16 @@ sdk_name = 'raven-coredump'
 sdk_version = '0.1.0'
 
 # Variables can be shadowed
-def insert_var(dict, var_name, var_value):
-    name = var_name
+def insert_var(dict, symbol, frame):
+    name = symbol.name
     i = 0
     while name in dict:
-        name = "%s (shadowed%s)" % (var_name, '*' * i)
+        name = "%s (shadowed%s)" % (symbol.name, '*' * i)
         i = i + 1
+    try:
+        var_value = str(symbol.value(frame))
+    except gdb.MemoryError as mem_error:
+        var_value = str(mem_error)
     dict[name] = var_value
 
 # returns local variables and function arguments
@@ -71,7 +75,7 @@ def frame_vars_json(frame):
     while block:
         for symbol in block:
             if (symbol.is_variable or symbol.is_argument):
-                insert_var(vars, symbol.name, str(symbol.value(frame)))
+                insert_var(vars, symbol, frame)
         # Don't search upwards past the function scope
         if block.function:
             break
