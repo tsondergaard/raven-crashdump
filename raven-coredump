@@ -34,7 +34,8 @@
 import argparse
 import datetime
 import gdb
-import uuid
+import gzip
+import io
 import json
 import os
 import platform
@@ -45,6 +46,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import uuid
 from gdb.FrameIterator import FrameIterator
 from urllib.parse import urlparse
 
@@ -147,6 +149,12 @@ def install_program():
     print('Running %s' % sysctl_cmd)
     subprocess.call(sysctl_cmd, shell=True)
 
+def gzip_compress(data):
+    out = io.BytesIO()
+    with gzip.GzipFile(fileobj=out, mode="w") as f:
+        f.write(data)
+    return out.getvalue()
+
 class RavenClient:
     def __init__(self, dsn):
         self.dsn = dsn
@@ -162,9 +170,12 @@ class RavenClient:
         url = self.__api_url('store/')
         headers = {
             'User-Agent': ('%s/%s' % (sdk_name, sdk_version)),
-            'X-Sentry-Auth': ('Sentry sentry_version=7, sentry_timestamp=%s, sentry_key=%s, sentry_secret=%s, sentry_client=%s/%s' % (timestamp.strftime('%s'), self.sentry_key, self.sentry_secret, sdk_name, sdk_version))
+            'X-Sentry-Auth': ('Sentry sentry_version=7, sentry_timestamp=%s, sentry_key=%s, sentry_secret=%s, sentry_client=%s/%s' % (timestamp.strftime('%s'), self.sentry_key, self.sentry_secret, sdk_name, sdk_version)),
+            'Content-Type': 'application/json',
+            'Content-Encoding': 'gzip'
         }
-        r = requests.post(url, headers=headers, json=event)
+        js = json.dumps(event)
+        r = requests.post(url, headers=headers, data=gzip_compress(js.encode('utf-8')))
         r.raise_for_status()
 
     def __api_url(self, op):
