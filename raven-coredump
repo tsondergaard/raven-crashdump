@@ -204,7 +204,7 @@ with open('/etc/raven-coredump.conf', 'r') as config_file:
 
 print('dsn: %s' % config['dsn'])
 
-f = tempfile.NamedTemporaryFile(delete=True)
+f = tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True)
 shutil.copyfileobj(sys.stdin.buffer, f)
 f.flush()
 args.core_filename = f.name
