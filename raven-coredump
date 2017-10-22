@@ -154,8 +154,13 @@ def install_program():
 
 def gzip_compress(data):
     out = io.BytesIO()
-    with gzip.GzipFile(fileobj=out, mode="w") as f:
+    # Cannot use "with" because GZipFile from Python 2.6 (shipped with CentOS 6) doesn't
+    # support the context manager protocol
+    f = gzip.GzipFile(fileobj=out, mode="w");
+    try:
         f.write(data)
+    finally:
+        f.close()
     return out.getvalue()
 
 class RavenClient:
