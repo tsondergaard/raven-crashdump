@@ -212,49 +212,49 @@ with open('/etc/raven-coredump.conf', 'r') as config_file:
 
 print('dsn: %s' % config['dsn'])
 
-f = tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True)
-# Using stdin.buffer will suffice with python-3: shutil.copyfileobj(sys.stdin.buffer, f)
-with os.fdopen(sys.stdin.fileno(), 'rb') as input_file:
-    shutil.copyfileobj(input_file, f)
-f.flush()
-args.core_filename = f.name
-args.executable_filepath = args.executable_filepath.replace('!', '/')
+with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f:
+    # Using stdin.buffer will suffice with python-3: shutil.copyfileobj(sys.stdin.buffer, f)
+    with os.fdopen(sys.stdin.fileno(), 'rb') as input_file:
+        shutil.copyfileobj(input_file, f)
+    f.flush()
+    args.core_filename = f.name
+    args.executable_filepath = args.executable_filepath.replace('!', '/')
 
-if config.get('set-opaque-type-resolution-off', False):
-    # Workaround gdb performance bug https://bugzilla.redhat.com/show_bug.cgi?id=1401091
-    gdb.execute('set opaque-type-resolution off', False, True)
+    if config.get('set-opaque-type-resolution-off', False):
+        # Workaround gdb performance bug https://bugzilla.redhat.com/show_bug.cgi?id=1401091
+        gdb.execute('set opaque-type-resolution off', False, True)
 
-gdb.execute('file %s' % args.executable_filepath, False, True)
+    gdb.execute('file %s' % args.executable_filepath, False, True)
 
-gdb.execute('target core %s' % args.core_filename, False, True)
+    gdb.execute('target core %s' % args.core_filename, False, True)
 
-# The initial thread when analyzing a crash is the crashing thread
-crashing_thread = gdb.selected_thread()
+    # The initial thread when analyzing a crash is the crashing thread
+    crashing_thread = gdb.selected_thread()
 
-timestamp = datetime.datetime.utcnow()
-sentry_event = {
-    'event_id': uuid.uuid4().hex,
-    'timestamp': timestamp.isoformat(),
-    'message': ('Crash in %s' % args.executable_filepath),
-    'platform': 'c',
-    'sdk': { 'name': sdk_name, 'version': sdk_version },
-    'level': 'fatal',
-    'server_name': socket.getfqdn(),
-    'contexts': {
-        'os': {
-            'name': platform.system(),
-            'version': '-'.join(platform.linux_distribution()[0:2]),
-            'kernel_version': platform.release()
-        }
-    },
-    # FIXME: Include stacktrace of crashing thread directly in event - this works
-    # around crashing thread not contributing to grouping. Issue reported:
-    # https://github.com/getsentry/sentry/issues/6398
-    'stacktrace': thread_json(crashing_thread)['stacktrace'],
-    'threads': threads_json(gdb.selected_inferior().threads())
-}
+    timestamp = datetime.datetime.utcnow()
+    sentry_event = {
+        'event_id': uuid.uuid4().hex,
+        'timestamp': timestamp.isoformat(),
+        'message': ('Crash in %s' % args.executable_filepath),
+        'platform': 'c',
+        'sdk': { 'name': sdk_name, 'version': sdk_version },
+        'level': 'fatal',
+        'server_name': socket.getfqdn(),
+        'contexts': {
+            'os': {
+                'name': platform.system(),
+                'version': '-'.join(platform.linux_distribution()[0:2]),
+                'kernel_version': platform.release()
+            }
+        },
+        # FIXME: Include stacktrace of crashing thread directly in event - this works
+        # around crashing thread not contributing to grouping. Issue reported:
+        # https://github.com/getsentry/sentry/issues/6398
+        'stacktrace': thread_json(crashing_thread)['stacktrace'],
+        'threads': threads_json(gdb.selected_inferior().threads())
+    }
 
-print('json: %s' % json.dumps(sentry_event, indent=4))
+    print('json: %s' % json.dumps(sentry_event, indent=4))
 
-raven_client = RavenClient(config['dsn'])
-raven_client.send_event(sentry_event, timestamp)
+    raven_client = RavenClient(config['dsn'])
+    raven_client.send_event(sentry_event, timestamp)
