@@ -48,7 +48,10 @@ import sys
 import tempfile
 import uuid
 from gdb.FrameIterator import FrameIterator
-from urllib.parse import urlparse
+try:
+    from urllib.parse import urlparse # Python 3
+except:
+    from urlparse import urlparse # Python 2
 
 sdk_name = 'raven-coredump'
 sdk_version = '0.1.0'
@@ -136,7 +139,7 @@ def install_program():
         with open(conf_file, 'w') as outfile:
             outfile.write(json.dumps({
                 'dsn': 'https://sentry_key:sentry_secret@sentry.io/project-number',
-                'set-opaque-type-resolution-off': true
+                'set-opaque-type-resolution-off': True
             }, indent=4))
             outfile.write('\n')
     core_pattern_setting = 'kernel.core_pattern=|%s -e=%%e -E=%%E -p=%%p -P=%%P' % dest_file
@@ -205,7 +208,9 @@ with open('/etc/raven-coredump.conf', 'r') as config_file:
 print('dsn: %s' % config['dsn'])
 
 f = tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True)
-shutil.copyfileobj(sys.stdin.buffer, f)
+# Using stdin.buffer will suffice with python-3: shutil.copyfileobj(sys.stdin.buffer, f)
+with os.fdopen(sys.stdin.fileno(), 'rb') as input_file:
+    shutil.copyfileobj(input_file, f)
 f.flush()
 args.core_filename = f.name
 args.executable_filepath = args.executable_filepath.replace('!', '/')
