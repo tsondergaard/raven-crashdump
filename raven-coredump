@@ -237,6 +237,10 @@ sentry_event = {
             'kernel_version': platform.release()
         }
     },
+    # FIXME: Include stacktrace of crashing thread directly in event - this works
+    # around crashing thread not contributing to grouping. Issue reported:
+    # https://github.com/getsentry/sentry/issues/6398
+    'stacktrace': thread_json(crashing_thread)['stacktrace'],
     'threads': threads_json(gdb.selected_inferior().threads())
 }
 
