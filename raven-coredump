@@ -231,11 +231,18 @@ with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f
     # The initial thread when analyzing a crash is the crashing thread
     crashing_thread = gdb.selected_thread()
 
+    # Extract signal information ($_siginfo is thread specific and shall be extracted
+    # while the crashing thread is the gdb.selected_thread())
+    exitsignal = str(gdb.parse_and_eval('$_exitsignal'))
+    exitsignal = exitsignal if (exitsignal != "void") else None
+    signalinfo = str(gdb.parse_and_eval("$_siginfo")) if (exitsignal) else None
+    registers = gdb.execute('info registers', False, True)
+
     timestamp = datetime.datetime.utcnow()
     sentry_event = {
         'event_id': uuid.uuid4().hex,
         'timestamp': timestamp.isoformat(),
-        'message': ('Crash in %s' % args.executable_filepath),
+        'message': ('Signal %s in %s' % (exitsignal, args.executable_filepath)) if (exitsignal) else ('Core from %s' % args.executable_filepath),
         'platform': 'c',
         'sdk': { 'name': sdk_name, 'version': sdk_version },
         'level': 'fatal',
@@ -247,12 +254,20 @@ with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f
                 'kernel_version': platform.release()
             }
         },
+        'extra': {
+            'registers': registers
+        },
         # FIXME: Include stacktrace of crashing thread directly in event - this works
         # around crashing thread not contributing to grouping. Issue reported:
         # https://github.com/getsentry/sentry/issues/6398
         'stacktrace': thread_json(crashing_thread)['stacktrace'],
         'threads': threads_json(gdb.selected_inferior().threads())
     }
+
+    if (exitsignal):
+        extra = sentry_event['extra']
+        extra['exitsignal'] = exitsignal
+        extra['signalinfo'] = signalinfo
 
     print('json: %s' % json.dumps(sentry_event, indent=4))
 
