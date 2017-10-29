@@ -35,6 +35,11 @@ import argparse
 import datetime
 import gdb
 import gzip
+import sys
+if  sys.version_info[0] < 3:
+    import imp
+else:
+    import importlib
 import io
 import json
 import os
@@ -44,7 +49,6 @@ import requests
 import shutil
 import socket
 import subprocess
-import sys
 import tempfile
 import uuid
 from gdb.FrameIterator import FrameIterator
@@ -151,6 +155,15 @@ def install_program():
     sysctl_cmd = 'sysctl "%s"' % core_pattern_setting
     print('Running %s' % sysctl_cmd)
     subprocess.call(sysctl_cmd, shell=True)
+
+def load_python_plugin(filename):
+    if  sys.version_info[0] < 3:
+        plugin_module = imp.load_source('ravenplugin', filename)
+    else:
+        spec = importlib.util.spec_from_file_location('ravenplugin', filename)
+        plugin_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(plugin_module)
+    return plugin_module
 
 def gzip_compress(data):
     out = io.BytesIO()
@@ -268,6 +281,10 @@ with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f
         extra = sentry_event['extra']
         extra['exitsignal'] = exitsignal
         extra['signalinfo'] = signalinfo
+
+    if 'extension-script' in config:
+        plugin_module = load_python_plugin(config['extension-script'])
+        plugin_module.process_core(sentry_event, args.executable_filepath, args.core_filename)
 
     print('json: %s' % json.dumps(sentry_event, indent=4))
 
