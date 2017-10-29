@@ -96,7 +96,7 @@ def frame_json(frame):
     sal = frame.find_sal()
     js = {
         'filename': sal.symtab.fullname() if (sal and sal.symtab) else '<unknown>',
-        'function': str(frame.function()) if frame.function() else '<unknown>',
+        'function': str(frame.function() or frame.name() or 'unknown'),
         'module': gdb.solib_name(frame.pc()),
         'instruction_addr': ('0x%x' % frame.pc())
     }
