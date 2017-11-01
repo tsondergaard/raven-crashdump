@@ -1,0 +1,23 @@
+
+# Add something like the following to the source of your C/C++ executable:
+# #ifdef __GNUC__
+# char version_section_info[] __attribute__((__section__(".buildinfo.version"))) = "@VERSION@";
+# char release_type_section_info[] __attribute__((__section__(".buildinfo.release_type"))) = "@RELEASE_TYPE@";
+# char commit_id_section_info[] __attribute__((__section__(".buildinfo.commit_id"))) = "@VCS_COMMIT_ID@";
+# char build_date_section_info[]  __attribute__((__section__(".buildinfo.build_date"))) = "@BUILD_DATE@";
+# #endif
+
+import subprocess
+
+def read_elf_section(filename, section_name):
+    return subprocess.check_output(['objcopy',
+                                    '--dump-section=%s=/dev/stdout' % section_name,
+                                    filename,
+                                    '/dev/null']).decode('utf-8').rstrip(b'\0').decode('utf-8')
+
+def process_core(sentry_event, executable_filepath, core_filename):
+    sentry_event['release'] = read_elf_section(executable_filepath, '.buildinfo.commit_id')
+    extra = sentry_event['extra']
+    extra['version'] = read_elf_section(executable_filepath, '.buildinfo.version')
+    extra['build_date'] = read_elf_section(executable_filepath, '.buildinfo.build_date')
+    extra['release_type'] = read_elf_section(executable_filepath, '.buildinfo.release_type')
