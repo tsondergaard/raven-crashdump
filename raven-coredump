@@ -252,10 +252,11 @@ with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f
     registers = gdb.execute('info registers', False, True)
 
     timestamp = datetime.datetime.utcnow()
+    executable_filename = os.path.basename(args.executable_filepath)
     sentry_event = {
         'event_id': uuid.uuid4().hex,
         'timestamp': timestamp.isoformat(),
-        'message': ('Signal %s in %s' % (exitsignal, args.executable_filepath)) if (exitsignal) else ('Core from %s' % args.executable_filepath),
+        'message': ('Signal %s in %s' % (exitsignal, executable_filename)) if (exitsignal) else ('Core from %s' % executable_filename),
         'platform': 'c',
         'sdk': { 'name': sdk_name, 'version': sdk_version },
         'level': 'fatal',
