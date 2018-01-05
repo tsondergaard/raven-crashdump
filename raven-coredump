@@ -92,7 +92,7 @@ def frame_vars_json(frame):
             block = block.superblock
     return vars
 
-def frame_json(frame):
+def frame_json(frame, include_variables):
     sal = frame.find_sal()
     js = {
         'filename': sal.symtab.fullname() if (sal and sal.symtab) else '<unknown>',
@@ -102,29 +102,30 @@ def frame_json(frame):
     }
     if (sal and sal.line > 0):
         js['lineno'] = sal.line
-    vars = frame_vars_json(frame)
-    if (vars):
-        js['vars'] = vars
+    if include_variables:
+        vars = frame_vars_json(frame)
+        if (vars):
+            js['vars'] = vars
     return js
 
-def backtrace_json(top_frame):
-    frames = list(map(frame_json, FrameIterator(top_frame)))
+def backtrace_json(top_frame, include_variables):
+    frames = [ frame_json(frame, include_variables) for frame in FrameIterator(top_frame) ]
     # Sentry format oddly wants oldest frame first.
     frames.reverse()
     return { 'frames': frames }
 
-def thread_json(thread):
+def thread_json(thread, include_variables):
     thread.switch()
     js = {
         'id': thread.ptid[1],
         'name': thread.name,
         'crashed': thread == crashing_thread,
-        'stacktrace': backtrace_json(gdb.newest_frame())
+        'stacktrace': backtrace_json(gdb.newest_frame(), include_variables)
     }
     return js
 
-def threads_json(threads):
-    threadsjs = list(map(thread_json, threads))
+def threads_json(threads, include_variables):
+    threadsjs = [ thread_json(thread, include_variables) for thread in threads ]
     return { 'values': threadsjs }
 
 def install_program():
@@ -143,7 +144,8 @@ def install_program():
         with open(conf_file, 'w') as outfile:
             outfile.write(json.dumps({
                 'dsn': 'https://sentry_key:sentry_secret@sentry.io/project-number',
-                'set-opaque-type-resolution-off': True
+                'set-opaque-type-resolution-off': True,
+                'include-variables': False
             }, indent=4))
             outfile.write('\n')
     core_pattern_setting = 'kernel.core_pattern=|%s -e=%%e -E=%%E -p=%%p -P=%%P' % dest_file
@@ -253,6 +255,7 @@ with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f
 
     timestamp = datetime.datetime.utcnow()
     executable_filename = os.path.basename(args.executable_filepath)
+    include_variables = config.get('include-variables', False)
     sentry_event = {
         'event_id': uuid.uuid4().hex,
         'timestamp': timestamp.isoformat(),
@@ -274,8 +277,8 @@ with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f
         # FIXME: Include stacktrace of crashing thread directly in event - this works
         # around crashing thread not contributing to grouping. Issue reported:
         # https://github.com/getsentry/sentry/issues/6398
-        'stacktrace': thread_json(crashing_thread)['stacktrace'],
-        'threads': threads_json(gdb.selected_inferior().threads())
+        'stacktrace': thread_json(crashing_thread, include_variables)['stacktrace'],
+        'threads': threads_json(gdb.selected_inferior().threads(), include_variables)
     }
 
     if (exitsignal):
