@@ -250,7 +250,10 @@ with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f
     # while the crashing thread is the gdb.selected_thread())
     exitsignal = str(gdb.parse_and_eval('$_exitsignal'))
     exitsignal = exitsignal if (exitsignal != "void") else None
-    signalinfo = str(gdb.parse_and_eval("$_siginfo")) if (exitsignal) else None
+    try:
+        signalinfo = str(gdb.parse_and_eval("$_siginfo")) if (exitsignal) else None
+    except:
+        signalinfo = None
     registers = gdb.execute('info registers', False, True)
 
     timestamp = datetime.datetime.utcnow()
