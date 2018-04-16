@@ -49,7 +49,9 @@ import requests
 import shutil
 import socket
 import subprocess
+import syslog
 import tempfile
+import traceback
 import uuid
 from gdb.FrameIterator import FrameIterator
 try:
@@ -216,84 +218,95 @@ def parse_commandline_args():
     parser.add_argument('--install', action='store_true', help='Install this program in /opt/raven-cpp/bin and configures is as coredump handler')
     return parser.parse_args(sys.argv)
 
-args = parse_commandline_args()
+syslog.openlog('raven-coredump')
+syslog.syslog('Started with argument: %s' % sys.argv)
 
-if (args.install):
-    install_program()
-    exit(0)
+try:
+    args = parse_commandline_args()
+    
+    if (args.install):
+        install_program()
+        exit(0)
+    
+    with open('/etc/raven-coredump.conf', 'r') as config_file:
+        config = json.load(config_file)
+    
+    print('dsn: %s' % config['dsn'])
 
-with open('/etc/raven-coredump.conf', 'r') as config_file:
-    config = json.load(config_file)
+    with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f:
+        # Using stdin.buffer will suffice with python-3: shutil.copyfileobj(sys.stdin.buffer, f)
+        with os.fdopen(sys.stdin.fileno(), 'rb') as input_file:
+            shutil.copyfileobj(input_file, f)
+        f.flush()
+        args.core_filename = f.name
+        args.executable_filepath = args.executable_filepath.replace('!', '/')
+    
+        if config.get('set-opaque-type-resolution-off', False):
+            # Workaround gdb performance bug https://bugzilla.redhat.com/show_bug.cgi?id=1401091
+            gdb.execute('set opaque-type-resolution off', False, True)
+    
+        gdb.execute('file %s' % args.executable_filepath, False, True)
+    
+        gdb.execute('target core %s' % args.core_filename, False, True)
+    
+        # The initial thread when analyzing a crash is the crashing thread
+        crashing_thread = gdb.selected_thread()
+    
+        # Extract signal information ($_siginfo is thread specific and shall be extracted
+        # while the crashing thread is the gdb.selected_thread())
+        exitsignal = str(gdb.parse_and_eval('$_exitsignal'))
+        exitsignal = exitsignal if (exitsignal != "void") else None
+        try:
+            signalinfo = str(gdb.parse_and_eval("$_siginfo")) if (exitsignal) else None
+        except:
+            signalinfo = None
+        registers = gdb.execute('info registers', False, True)
+    
+        timestamp = datetime.datetime.utcnow()
+        executable_filename = os.path.basename(args.executable_filepath)
+        include_variables = config.get('include-variables', False)
+        sentry_event = {
+            'event_id': uuid.uuid4().hex,
+            'timestamp': timestamp.isoformat(),
+            'message': ('Signal %s in %s' % (exitsignal, executable_filename)) if (exitsignal) else ('Core from %s' % executable_filename),
+            'platform': 'c',
+            'sdk': { 'name': sdk_name, 'version': sdk_version },
+            'level': 'fatal',
+            'server_name': socket.getfqdn(),
+            'contexts': {
+                'os': {
+                    'name': platform.system(),
+                    'version': '-'.join(platform.linux_distribution()[0:2]),
+                    'kernel_version': platform.release()
+                }
+            },
+            'extra': {
+                'registers': registers
+            },
+            # FIXME: Include stacktrace of crashing thread directly in event - this works
+            # around crashing thread not contributing to grouping. Issue reported:
+            # https://github.com/getsentry/sentry/issues/6398
+            'stacktrace': thread_json(crashing_thread, include_variables)['stacktrace'],
+            'threads': threads_json(gdb.selected_inferior().threads(), include_variables)
+        }
+    
+        if (exitsignal):
+            extra = sentry_event['extra']
+            extra['exitsignal'] = exitsignal
+            extra['signalinfo'] = signalinfo
+    
+        if 'extension-script' in config:
+            plugin_module = load_python_plugin(config['extension-script'])
+            plugin_module.process_core(sentry_event, args.executable_filepath, args.core_filename)
+    
+        print('json: %s' % json.dumps(sentry_event, indent=4))
+    
+        raven_client = RavenClient(config['dsn'])
+        raven_client.send_event(sentry_event, timestamp)
+except Exception:
+    syslog.syslog(syslog.LOG_ERR | syslog.LOG_USER, 'Exception: %s ' % traceback.format_exception(*sys.exc_info()))
+    print('Exception: %s ' % traceback.format_exception(*sys.exc_info()))
+    gdb.execute('quit 1', False, True)
 
-print('dsn: %s' % config['dsn'])
 
-with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f:
-    # Using stdin.buffer will suffice with python-3: shutil.copyfileobj(sys.stdin.buffer, f)
-    with os.fdopen(sys.stdin.fileno(), 'rb') as input_file:
-        shutil.copyfileobj(input_file, f)
-    f.flush()
-    args.core_filename = f.name
-    args.executable_filepath = args.executable_filepath.replace('!', '/')
-
-    if config.get('set-opaque-type-resolution-off', False):
-        # Workaround gdb performance bug https://bugzilla.redhat.com/show_bug.cgi?id=1401091
-        gdb.execute('set opaque-type-resolution off', False, True)
-
-    gdb.execute('file %s' % args.executable_filepath, False, True)
-
-    gdb.execute('target core %s' % args.core_filename, False, True)
-
-    # The initial thread when analyzing a crash is the crashing thread
-    crashing_thread = gdb.selected_thread()
-
-    # Extract signal information ($_siginfo is thread specific and shall be extracted
-    # while the crashing thread is the gdb.selected_thread())
-    exitsignal = str(gdb.parse_and_eval('$_exitsignal'))
-    exitsignal = exitsignal if (exitsignal != "void") else None
-    try:
-        signalinfo = str(gdb.parse_and_eval("$_siginfo")) if (exitsignal) else None
-    except:
-        signalinfo = None
-    registers = gdb.execute('info registers', False, True)
-
-    timestamp = datetime.datetime.utcnow()
-    executable_filename = os.path.basename(args.executable_filepath)
-    include_variables = config.get('include-variables', False)
-    sentry_event = {
-        'event_id': uuid.uuid4().hex,
-        'timestamp': timestamp.isoformat(),
-        'message': ('Signal %s in %s' % (exitsignal, executable_filename)) if (exitsignal) else ('Core from %s' % executable_filename),
-        'platform': 'c',
-        'sdk': { 'name': sdk_name, 'version': sdk_version },
-        'level': 'fatal',
-        'server_name': socket.getfqdn(),
-        'contexts': {
-            'os': {
-                'name': platform.system(),
-                'version': '-'.join(platform.linux_distribution()[0:2]),
-                'kernel_version': platform.release()
-            }
-        },
-        'extra': {
-            'registers': registers
-        },
-        # FIXME: Include stacktrace of crashing thread directly in event - this works
-        # around crashing thread not contributing to grouping. Issue reported:
-        # https://github.com/getsentry/sentry/issues/6398
-        'stacktrace': thread_json(crashing_thread, include_variables)['stacktrace'],
-        'threads': threads_json(gdb.selected_inferior().threads(), include_variables)
-    }
-
-    if (exitsignal):
-        extra = sentry_event['extra']
-        extra['exitsignal'] = exitsignal
-        extra['signalinfo'] = signalinfo
-
-    if 'extension-script' in config:
-        plugin_module = load_python_plugin(config['extension-script'])
-        plugin_module.process_core(sentry_event, args.executable_filepath, args.core_filename)
-
-    print('json: %s' % json.dumps(sentry_event, indent=4))
-
-    raven_client = RavenClient(config['dsn'])
-    raven_client.send_event(sentry_event, timestamp)
+syslog.syslog('crash analysis completed')
