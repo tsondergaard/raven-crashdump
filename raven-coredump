@@ -34,6 +34,7 @@
 import argparse
 import datetime
 import gdb
+import glob
 import gzip
 import sys
 if  sys.version_info[0] < 3:
@@ -53,6 +54,7 @@ import syslog
 import tempfile
 import traceback
 import uuid
+import zipfile
 from gdb.FrameIterator import FrameIterator
 try:
     from urllib.parse import urlparse # Python 3
@@ -233,6 +235,17 @@ try:
     
     print('dsn: %s' % config['dsn'])
 
+    proc_info = {}
+
+    with open('/proc/%s/environ' % args.pid) as file:
+        proc_info['environ'] = file.read()
+
+    with open('/proc/%s/status' % args.pid) as file:
+        proc_info['status'] = file.read()
+
+    with open('/proc/%s/cmdline' % args.pid) as file:
+        proc_info['cmdline'] = file.read()
+
     with tempfile.NamedTemporaryFile(prefix='raven-coredump-core', delete=True) as f:
         # Using stdin.buffer will suffice with python-3: shutil.copyfileobj(sys.stdin.buffer, f)
         with os.fdopen(sys.stdin.fileno(), 'rb') as input_file:
@@ -295,12 +308,26 @@ try:
             extra['exitsignal'] = exitsignal
             extra['signalinfo'] = signalinfo
     
+        print('json: %s' % json.dumps(sentry_event, indent=4))
+
+        crash_folder = config.get('local-crash-folder', '/var/opt/raven-coredump')
+        crash_info_filename = '%s-%s-%s.zip' % (executable_filename, args.pid, timestamp.strftime('%Y-%m-%dT%H-%M-%S'))
+        crash_info_archive_filepath = os.path.join(crash_folder, crash_info_filename)
+        if not os.path.isdir(crash_folder):
+            os.makedirs(crash_folder)
+        extra['crash_archive'] = crash_info_archive_filepath
+        # ZipFile is not a context manager until Python 2.7 so we can't use "with" here
+        # because RHEL/CentOS 6 uses gdb with python 2.6.
+        archive = zipfile.ZipFile(crash_info_archive_filepath, 'w', zipfile.ZIP_DEFLATED)
+        archive.writestr('proc-pid-environ.txt', proc_info['environ'])
+        archive.writestr('proc-pid-status.txt', proc_info['status'])
+        archive.writestr('proc-pid-cmdline.txt', proc_info['cmdline'])
         if 'extension-script' in config:
             plugin_module = load_python_plugin(config['extension-script'])
-            plugin_module.process_core(sentry_event, args.executable_filepath, args.core_filename)
-    
-        print('json: %s' % json.dumps(sentry_event, indent=4))
-    
+            plugin_module.process_core(sentry_event, args, proc_info, archive)
+        archive.writestr('sentry-event.json', json.dumps(sentry_event, indent=4))
+        archive.close()
+
         raven_client = RavenClient(config['dsn'])
         raven_client.send_event(sentry_event, timestamp)
 except Exception:
