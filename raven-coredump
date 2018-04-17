@@ -237,7 +237,10 @@ def parse_commandline_args():
     parser.add_argument('-p', metavar='pid', dest='pid_own_ns', help='PID of dumped process, as seen in the PID namespace in which the process resides')
     parser.add_argument('-P', metavar='pid', dest='pid', help='PID of dumped process, as seen in the initial PID namespace')
     parser.add_argument('--install', action='store_true', help='Install this program in /opt/raven-cpp/bin and configures is as coredump handler')
-    return parser.parse_args(sys.argv)
+    args = parser.parse_args(sys.argv)
+    if not args.pid:
+       args.pid = args.pid_own_ns
+    return args
 
 syslog.openlog('raven-coredump')
 syslog.syslog('Started with argument: %s' % sys.argv)
