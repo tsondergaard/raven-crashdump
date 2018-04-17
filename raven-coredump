@@ -96,7 +96,7 @@ def frame_vars_json(frame):
             block = block.superblock
     return vars
 
-def frame_json(frame, include_variables):
+def frame_json(frame):
     sal = frame.find_sal()
     js = {
         'filename': sal.symtab.fullname() if (sal and sal.symtab) else '<unknown>',
@@ -106,31 +106,50 @@ def frame_json(frame, include_variables):
     }
     if (sal and sal.line > 0):
         js['lineno'] = sal.line
-    if include_variables:
-        vars = frame_vars_json(frame)
-        if (vars):
-            js['vars'] = vars
+    vars = frame_vars_json(frame)
+    if (vars):
+        js['vars'] = vars
     return js
 
-def backtrace_json(top_frame, include_variables):
-    frames = [ frame_json(frame, include_variables) for frame in FrameIterator(top_frame) ]
+def backtrace_json(top_frame):
+    frames = [ frame_json(frame) for frame in FrameIterator(top_frame) ]
     # Sentry format oddly wants oldest frame first.
     frames.reverse()
     return { 'frames': frames }
 
-def thread_json(thread, include_variables):
+def thread_json(thread):
     thread.switch()
     js = {
         'id': thread.ptid[1],
         'name': thread.name,
         'crashed': thread == crashing_thread,
-        'stacktrace': backtrace_json(gdb.newest_frame(), include_variables)
+        'stacktrace': backtrace_json(gdb.newest_frame())
     }
     return js
 
-def threads_json(threads, include_variables):
-    threadsjs = [ thread_json(thread, include_variables) for thread in threads ]
+def threads_json(threads):
+    threadsjs = [ thread_json(thread) for thread in threads ]
     return { 'values': threadsjs }
+
+def prune_vars_from_stacktrace(stacktrace):
+    for frame in stacktrace['frames']:
+        frame.pop('vars', None)
+
+def prune_vars_from_threads(threads):
+    threads_list = threads['values']
+    if threads_list:
+        for thread in threads_list:
+            stacktrace = thread['stacktrace']
+            if stacktrace:
+                prune_vars_from_stacktrace(stacktrace)
+
+def prune_vars_from_sentry_event(sentry_event):
+    stacktrace = sentry_event['stacktrace']
+    if stacktrace:
+        prune_vars_from_stacktrace(stacktrace)
+    threads = sentry_event['threads']
+    if threads:
+        prune_vars_from_threads(threads)
 
 def install_program():
     dest_path = '/opt/raven-crashdump/bin/'
@@ -277,7 +296,6 @@ try:
     
         timestamp = datetime.datetime.utcnow()
         executable_filename = os.path.basename(args.executable_filepath)
-        include_variables = config.get('include-variables', False)
         sentry_event = {
             'event_id': uuid.uuid4().hex,
             'timestamp': timestamp.isoformat(),
@@ -299,8 +317,8 @@ try:
             # FIXME: Include stacktrace of crashing thread directly in event - this works
             # around crashing thread not contributing to grouping. Issue reported:
             # https://github.com/getsentry/sentry/issues/6398
-            'stacktrace': thread_json(crashing_thread, include_variables)['stacktrace'],
-            'threads': threads_json(gdb.selected_inferior().threads(), include_variables)
+            'stacktrace': thread_json(crashing_thread)['stacktrace'],
+            'threads': threads_json(gdb.selected_inferior().threads())
         }
     
         if (exitsignal):
@@ -329,6 +347,8 @@ try:
         archive.close()
 
         raven_client = RavenClient(config['dsn'])
+        if not config.get('include-variables', False):
+            prune_vars_from_sentry_event(sentry_event)
         raven_client.send_event(sentry_event, timestamp)
 except Exception:
     syslog.syslog(syslog.LOG_ERR | syslog.LOG_USER, 'Exception: %s ' % traceback.format_exception(*sys.exc_info()))
