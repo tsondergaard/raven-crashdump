@@ -62,7 +62,7 @@ except:
     from urlparse import urlparse # Python 2
 
 sdk_name = 'raven-coredump'
-sdk_version = '0.1.0'
+sdk_version = '0.2.0'
 
 # Variables can be shadowed
 def insert_var(dict, symbol, frame):
