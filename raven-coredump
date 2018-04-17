@@ -152,7 +152,7 @@ def prune_vars_from_sentry_event(sentry_event):
         prune_vars_from_threads(threads)
 
 def install_program():
-    dest_path = '/opt/raven-crashdump/bin/'
+    dest_path = '/opt/raven-coredump/bin/'
     dest_file = os.path.join(dest_path, 'raven-coredump')
     print('Installing %s' % dest_file)
     if not os.path.isdir(dest_path):
