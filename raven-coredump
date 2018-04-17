@@ -151,35 +151,43 @@ def prune_vars_from_sentry_event(sentry_event):
     if threads:
         prune_vars_from_threads(threads)
 
-def install_program():
-    dest_path = '/opt/raven-coredump/bin/'
+def install_program(dest_dir = '/'):
+    dest_path = 'opt/raven-coredump/bin'
     dest_file = os.path.join(dest_path, 'raven-coredump')
     print('Installing %s' % dest_file)
-    if not os.path.isdir(dest_path):
-        os.makedirs(dest_path)
-    shutil.copy(os.path.realpath(__file__), dest_file)
-    os.chmod(dest_file, 0o755)
-    conf_file = '/etc/raven-coredump.conf'
-    if os.path.exists(conf_file):
-        print('%s exists - leaving it unchanged' % conf_file)
+    if not os.path.isdir(os.path.join(dest_dir, dest_path)):
+        os.makedirs(os.path.join(dest_dir, dest_path))
+    shutil.copy(os.path.realpath(__file__), os.path.join(dest_dir, dest_file))
+    os.chmod(os.path.join(dest_dir, dest_file), 0o755)
+    etc_dir = 'etc'
+    conf_file = os.path.join(etc_dir, 'raven-coredump.conf')
+    if os.path.exists(os.path.join(dest_dir, conf_file)):
+        print('%s exists - leaving it unchanged' % os.path.join(dest_dir, conf_file))
     else:
-        print('Installing %s' % conf_file)
-        with open(conf_file, 'w') as outfile:
+        print('Installing %s' % os.path.join(dest_dir, conf_file))
+        if not os.path.isdir(os.path.join(dest_dir, etc_dir)):
+            os.makedirs(os.path.join(dest_dir, etc_dir))
+        with open(os.path.join(dest_dir, conf_file), 'w') as outfile:
             outfile.write(json.dumps({
                 'dsn': 'https://sentry_key:sentry_secret@sentry.io/project-number',
                 'set-opaque-type-resolution-off': True,
                 'include-variables': False
             }, indent=4))
             outfile.write('\n')
-    core_pattern_setting = 'kernel.core_pattern=|%s -e=%%e -E=%%E -p=%%p -P=%%P' % dest_file
-    sysctl_conf_file = '/etc/sysctl.d/80-raven-coredump.conf'
-    print('Installing %s' % sysctl_conf_file)
-    with open(sysctl_conf_file, 'w') as outfile:
+    core_pattern_setting = 'kernel.core_pattern=|%s -e=%%e -E=%%E -p=%%p -P=%%P' % os.path.join('/', dest_file)
+
+    sysctl_dir = os.path.join(etc_dir, 'sysctl.d')
+    if not os.path.isdir(os.path.join(dest_dir, sysctl_dir)):
+        os.makedirs(os.path.join(dest_dir, sysctl_dir))
+    sysctl_conf_file = os.path.join(sysctl_dir, '80-raven-coredump.conf')
+    print('Installing %s' % os.path.join(dest_dir, sysctl_conf_file))
+    with open(os.path.join(dest_dir, sysctl_conf_file), 'w') as outfile:
         outfile.write(core_pattern_setting)
         outfile.write('\n')
-    sysctl_cmd = 'sysctl "%s"' % core_pattern_setting
-    print('Running %s' % sysctl_cmd)
-    subprocess.call(sysctl_cmd, shell=True)
+    if dest_dir == '/':
+        sysctl_cmd = 'sysctl "%s"' % core_pattern_setting
+        print('Running %s' % sysctl_cmd)
+        subprocess.call(sysctl_cmd, shell=True)
 
 def load_python_plugin(filename):
     if  sys.version_info[0] < 3:
@@ -236,7 +244,9 @@ def parse_commandline_args():
     parser.add_argument('-I', metavar='tid', dest='tid', help='TID of thread that triggered core dump, as seen in the initial PID namespace')
     parser.add_argument('-p', metavar='pid', dest='pid_own_ns', help='PID of dumped process, as seen in the PID namespace in which the process resides')
     parser.add_argument('-P', metavar='pid', dest='pid', help='PID of dumped process, as seen in the initial PID namespace')
-    parser.add_argument('--install', action='store_true', help='Install this program in /opt/raven-cpp/bin and configures is as coredump handler')
+    parser.add_argument('--install', action='store_true', help='Install this program in /opt/raven-coredump/bin and configures is as coredump handler')
+    parser.add_argument('--rpm-install', metavar='dest_dir', dest='rpm_install', help='Install this program in {dest_dir}/opt/raven-coredump/bin')
+    parser.add_argument('--version', action='store_true', help='Print the version of the program')
     args = parser.parse_args(sys.argv)
     if not args.pid:
        args.pid = args.pid_own_ns
@@ -248,10 +258,18 @@ syslog.syslog('Started with argument: %s' % sys.argv)
 try:
     args = parse_commandline_args()
     
-    if (args.install):
+    if args.install:
         install_program()
         exit(0)
     
+    if args.rpm_install:
+        install_program(args.rpm_install)
+        exit(0)
+
+    if args.version:
+        print(sdk_version)
+        exit(0)
+
     with open('/etc/raven-coredump.conf', 'r') as config_file:
         config = json.load(config_file)
     
