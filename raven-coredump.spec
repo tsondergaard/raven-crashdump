@@ -7,7 +7,7 @@ License: BSD
 Vendor: Karos Health
 BuildArch: noarch
 %if 0%{?rhel}
-Requires: devtoolset-7-gdb
+Requires: devtoolset-6-gdb
 %else
 Requires: gdb
 %endif
@@ -26,7 +26,7 @@ raven-coredump is a coredump handler that reports program crashes to sentry.io.
 rm -rf $RPM_BUILD_ROOT
 %{raven_coredump_source_dir}/raven-coredump --rpm-install=$RPM_BUILD_ROOT
 %if 0%{?rhel}
-sed -i -e 's|/usr/bin/gdb|/opt/rh/devtoolset-7/root/usr/bin/gdb|' $RPM_BUILD_ROOT/opt/raven-coredump/bin/raven-coredump
+sed -i -e 's|/usr/bin/gdb|/opt/rh/devtoolset-6/root/usr/bin/gdb|' $RPM_BUILD_ROOT/opt/raven-coredump/bin/raven-coredump
 %endif
 
 %post
