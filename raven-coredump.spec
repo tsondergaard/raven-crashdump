@@ -35,4 +35,4 @@ sysctl -p %{_sysconfdir}/sysctl.d/80-raven-coredump.conf
 %files
 /opt/raven-coredump/bin/raven-coredump
 %config(noreplace) %{_sysconfdir}/raven-coredump.conf
-%{_sysconfdir}/sysctl.d/80-raven-coredump.conf
+%config(noreplace) %{_sysconfdir}/sysctl.d/80-raven-coredump.conf
