@@ -273,8 +273,6 @@ try:
     with open('/etc/raven-coredump.conf', 'r') as config_file:
         config = json.load(config_file)
     
-    print('dsn: %s' % config['dsn'])
-
     proc_info = {}
 
     with open('/proc/%s/environ' % args.pid) as file:
@@ -367,10 +365,11 @@ try:
         archive.writestr('sentry-event.json', json.dumps(sentry_event, indent=4))
         archive.close()
 
-        raven_client = RavenClient(config['dsn'])
-        if not config.get('include-variables', False):
-            prune_vars_from_sentry_event(sentry_event)
-        raven_client.send_event(sentry_event, timestamp)
+        if 'dsn' in config:
+            raven_client = RavenClient(config['dsn'])
+            if not config.get('include-variables', False):
+                prune_vars_from_sentry_event(sentry_event)
+            raven_client.send_event(sentry_event, timestamp)
 except Exception:
     syslog.syslog(syslog.LOG_ERR | syslog.LOG_USER, 'Exception: %s ' % traceback.format_exception(*sys.exc_info()))
     print('Exception: %s ' % traceback.format_exception(*sys.exc_info()))
