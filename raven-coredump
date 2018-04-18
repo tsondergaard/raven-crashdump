@@ -169,9 +169,10 @@ def install_program(dest_dir = '/'):
             os.makedirs(os.path.join(dest_dir, etc_dir))
         with open(os.path.join(dest_dir, conf_file), 'w') as outfile:
             outfile.write(json.dumps({
-                'dsn': 'https://sentry_key:sentry_secret@sentry.io/project-number',
-                'set-opaque-type-resolution-off': True,
-                'include-variables': False
+                '#dsn': 'https://sentry_key:sentry_secret@sentry.io/project-number',
+                '#set-opaque-type-resolution-off': True,
+                '#include-variables': False,
+                '#local-crash-folder': '/var/opt/raven-coredump'
             }, indent=4))
             outfile.write('\n')
     core_pattern_setting = 'kernel.core_pattern=|%s -e=%%e -E=%%E -p=%%p -P=%%P' % os.path.join('/', dest_file)
@@ -292,7 +293,7 @@ try:
         args.core_filename = f.name
         args.executable_filepath = args.executable_filepath.replace('!', '/')
     
-        if config.get('set-opaque-type-resolution-off', False):
+        if config.get('set-opaque-type-resolution-off', True):
             # Workaround gdb performance bug https://bugzilla.redhat.com/show_bug.cgi?id=1401091
             gdb.execute('set opaque-type-resolution off', False, True)
     
